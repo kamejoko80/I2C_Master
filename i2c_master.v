@@ -30,6 +30,7 @@ module i2c_master(input             i_clk,              //input clock to the mod
                   input      [7:0]  i_addr_w_rw,        //7 bit address, LSB is the read write bit, with 0 being write, 1 being read
                   input      [15:0] i_sub_addr,         //contains sub addr to send to slave, partition is decided on bit_sel
                   input             i_sub_len,          //denotes whether working with an 8 bit or 16 bit sub_addr, 0 is 8bit, 1 is 16 bit
+                  input             disable_sub_addr,   //sub addr is disable if this bit is set
                   input      [23:0] i_byte_len,         //denotes whether a single or sequential read or write will be performed (denotes number of bytes to read or write)
                   input      [7:0]  i_data_write,       //Data to write if performing write action
                   input             req_trans,          //denotes when to start a new transaction
@@ -170,6 +171,7 @@ always@(posedge i_clk or negedge reset_n) begin
         {ack_nack, ack_in_prog, en_end_indicator} <= 0;
         {scl_is_high, scl_is_low, grab_next_data} <= 0;
         reg_sda_o <= 1'bz;
+        led <= 1;
         state <= IDLE;
         next_state <= IDLE;
     end
@@ -206,7 +208,7 @@ always@(posedge i_clk or negedge reset_n) begin
                     
                     //Reset flags and or counters
                     nack <= 1'b0;  
-                    read_sub_addr_sent_flag <= 1'b0;
+                    read_sub_addr_sent_flag <= disable_sub_addr;
                     num_byte_sent <= 0;
                     byte_sent <= 1'b0;
                 end
@@ -223,7 +225,11 @@ always@(posedge i_clk or negedge reset_n) begin
             START: begin
                 if(scl_prev & scl_curr & clk_i2c_cntr == START_IND_SETUP) begin   //check that scl is high, and that a necessary wait time is held
                     reg_sda_o <= 1'b0;                                       //set start bit for negedge of clock, and toggle for the clock to begin
-                    byte_sr <= {addr[7:1], 1'b0};                            //Don't need to check read or write, will always have write in a read request as well
+                    if (read_sub_addr_sent_flag == 1) begin
+                        byte_sr <= addr[7:0];
+                    end else begin
+                        byte_sr <= {addr[7:1], 1'b0};                            //Don't need to check read or write, will always have write in a read request as well
+                    end
                     state <= SLAVE_ADDR;
                     $display("DUT: I2C MASTER | TIMESTAMP: %t | MESSAGE: START INDICATION!", $time);
                 end
@@ -264,8 +270,13 @@ always@(posedge i_clk or negedge reset_n) begin
                 //When scl has fallen, we can change sda 
                 if(byte_sent & cntr[0]) begin
                     byte_sent <= 1'b0;                      //deassert the flag
-                    next_state <= read_sub_addr_sent_flag ? READ : SUB_ADDR;    //Check to see if sub addr was sent, we ony reach this state again if doing a read
-                    byte_sr <= sub_addr[15:8];              //regardless of sub addr length, higher byte will be sent first
+                    if(rw == 1) begin
+                        next_state <= read_sub_addr_sent_flag ? READ : SUB_ADDR;    //Check to see if sub addr was sent, we ony reach this state again if doing a read
+                        byte_sr <= sub_addr[15:8];              //regardless of sub addr length, higher byte will be sent first 
+                    end else begin
+                        next_state <= read_sub_addr_sent_flag ? WRITE : SUB_ADDR;    //Check to see if sub addr was sent, we ony reach this state again if doing a read                        
+                        byte_sr <= read_sub_addr_sent_flag ? data_to_write : sub_addr[15:8];
+                    end
                     state <= ACK_NACK_RX;                   //await for nack_ack
                     reg_sda_o <= 1'bz;                      //release sda line
                     cntr <= 0;
