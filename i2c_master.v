@@ -101,7 +101,8 @@ localparam [3:0] IDLE        = 4'd0,
                  RELEASE_BUS = 4'hB;
                  
 //Modify These Parameters for other targets
-localparam [15:0] DIV_100MHZ = 16'd125;         //desire 400KHz, have 100MHz, thus (1/(400*10^3)*100*10^6)/2, note div by 2 is for need to change in cycle
+localparam [15:0] DIV_100MHZ = 16'd125; //desire 400KHz, have 100MHz, thus (1/(400*10^3)*100*10^6)/2, note div by 2 is for need to change in cycle
+//localparam [15:0] DIV_100MHZ = 16'd250;   //desire 200KHz, have 100MHz, thus (1/(200*10^3)*100*10^6)/2, note div by 2 is for need to change in cycle
 localparam [7:0]  START_IND_SETUP  = 70,  //Time before negedge of scl
                   START_IND_HOLD   = 60,  //Time after posedge of clock when start occurs (not used)
                   DATA_SETUP_TIME  =  2,  //Time needed before posedge of scl 
@@ -118,6 +119,7 @@ reg [15:0] sub_addr;
 reg        sub_len;
 reg [23:0] byte_len;
 reg        en_scl;
+reg        en_sda;
 reg        byte_sent;
 reg [23:0] num_byte_sent;
 reg [2:0]  cntr;
@@ -171,7 +173,7 @@ always@(posedge i_clk or negedge reset_n) begin
         {ack_nack, ack_in_prog, en_end_indicator} <= 0;
         {scl_is_high, scl_is_low, grab_next_data} <= 0;
         reg_sda_o <= 1'bz;
-        led <= 1;
+        en_sda <= 0;
         state <= IDLE;
         next_state <= IDLE;
     end
@@ -205,6 +207,7 @@ always@(posedge i_clk or negedge reset_n) begin
                     //begin the 400kHz generation                    
                     en_scl <= 1'b1;
                     reg_sda_o <= 1'b1;
+                    en_sda <= 0;
                     
                     //Reset flags and or counters
                     nack <= 1'b0;  
@@ -224,7 +227,8 @@ always@(posedge i_clk or negedge reset_n) begin
              */
             START: begin
                 if(scl_prev & scl_curr & clk_i2c_cntr == START_IND_SETUP) begin   //check that scl is high, and that a necessary wait time is held
-                    reg_sda_o <= 1'b0;                                       //set start bit for negedge of clock, and toggle for the clock to begin
+                    reg_sda_o <= 1'b0;                                            //set start bit for negedge of clock, and toggle for the clock to begin
+                    en_sda <= 1;
                     if (read_sub_addr_sent_flag == 1) begin
                         byte_sr <= addr[7:0];
                     end else begin
@@ -243,6 +247,7 @@ always@(posedge i_clk or negedge reset_n) begin
             RESTART: begin
                 if(!scl_curr & scl_prev) begin
                     reg_sda_o <= 1'b1;              //Set line high
+                    en_sda <= 0;
                 end
                 
                 if(!scl_prev & scl_curr) begin      //so i2c cntr has reset
@@ -253,6 +258,7 @@ always@(posedge i_clk or negedge reset_n) begin
                     if(clk_i2c_cntr == START_IND_SETUP) begin   //Must wait minimum setup time
                         scl_is_high <= 1'b0;
                         reg_sda_o <= 1'b0;
+                        en_sda <= 1;
                         state <= SLAVE_ADDR;
                         byte_sr <= addr;
                     end
@@ -279,6 +285,7 @@ always@(posedge i_clk or negedge reset_n) begin
                     end
                     state <= ACK_NACK_RX;                   //await for nack_ack
                     reg_sda_o <= 1'bz;                      //release sda line
+                    en_sda <= 0;
                     cntr <= 0;
                     $display("DUT: I2C MASTER | TIMESTAMP: %t | MESSAGE: SLAVE_ADDR SENT!", $time);
                 end
@@ -291,6 +298,7 @@ always@(posedge i_clk or negedge reset_n) begin
                         if(clk_i2c_cntr == DATA_HOLD_TIME) begin
                             {byte_sent, cntr} <= {byte_sent, cntr} + 1;       //incr cntr, with overflow being caught (due to overflow, no need to set cntr to 0)
                             reg_sda_o <= byte_sr[7];                //send MSB
+                            en_sda <= byte_sr[7] ? 0 : 1;
                             byte_sr <= {byte_sr[6:0], 1'b0};        //shift out MSB
                             scl_is_low <= 1'b0;
                         end
@@ -326,6 +334,7 @@ always@(posedge i_clk or negedge reset_n) begin
                     byte_sent <= 1'b0;                      //deassert the flag
                     state <= ACK_NACK_RX;                   //await for nack_ack
                     reg_sda_o <= 1'bz;                       //release sda line
+                    en_sda <= 0;
                 end
                 else begin
                     if(!scl_curr & scl_prev) begin
@@ -336,7 +345,8 @@ always@(posedge i_clk or negedge reset_n) begin
                         if(clk_i2c_cntr == DATA_HOLD_TIME) begin
                             scl_is_low <= 1'b0;
                             {byte_sent, cntr} <= {byte_sent, cntr} + 1;       //incr cntr, with overflow being caught
-                            reg_sda_o <=  byte_sr[7];               //send MSB
+                            reg_sda_o <= byte_sr[7];                //send MSB
+                            en_sda <= byte_sr[7] ? 0 : 1;
                             byte_sr <= {byte_sr[6:0], 1'b0};        //shift out MSB
                         end
                     end
@@ -390,6 +400,7 @@ always@(posedge i_clk or negedge reset_n) begin
                     byte_sent <= 1'b0;
                     state <= ACK_NACK_RX;
                     reg_sda_o <= 1'bz;
+                    en_sda <= 0;
                     next_state <= (num_byte_sent == byte_len-1) ? STOP : GRAB_DATA;
                     num_byte_sent <= num_byte_sent + 1'b1;
                     grab_next_data <= 1'b1;
@@ -403,7 +414,8 @@ always@(posedge i_clk or negedge reset_n) begin
                     if(scl_is_low) begin //negedge
                         if(clk_i2c_cntr == DATA_HOLD_TIME) begin
                             {byte_sent, cntr} <= {byte_sent, cntr} + 1;
-                            reg_sda_o <= byte_sr[7];
+                            reg_sda_o <= byte_sr[7];                //send MSB
+                            en_sda <= byte_sr[7] ? 0 : 1;
                             byte_sr <= {byte_sr[6:0], 1'b0};        //shift out MSB
                             scl_is_low <= 1'b0;
                         end
@@ -449,6 +461,7 @@ always@(posedge i_clk or negedge reset_n) begin
                             nack <= 1'b1;
                             busy <= 1'b0;
                             reg_sda_o <= 1'bz;
+                            en_sda <= 0;
                             en_scl <= 1'b0;
                             state <= IDLE;
                         end  
@@ -471,10 +484,12 @@ always@(posedge i_clk or negedge reset_n) begin
                     if(clk_i2c_cntr == DATA_HOLD_TIME) begin
                         if(ack_in_prog) begin 
                             reg_sda_o <= ack_nack;          //write ack until negedge of clk
+                            en_sda <= ack_nack ? 0 : 1;
                             ack_in_prog <= 1'b0;
                         end
                         else begin
                             reg_sda_o <= next_state == STOP ? 1'b0 : 1'bz;
+                            en_sda <= next_state == STOP ? 1 : 0;
                             en_end_indicator <= next_state == STOP ? 1'b1 : en_end_indicator;
                             state <= next_state;
                         end
@@ -491,6 +506,7 @@ always@(posedge i_clk or negedge reset_n) begin
             STOP: begin 
                 if(!scl_curr & scl_prev & !rw) begin //negedge only if we are writing
                     reg_sda_o <= 1'b0;               //Set to low
+                    en_sda <= 1;
                     en_end_indicator <= 1'b1;
                 end
                 
@@ -503,6 +519,7 @@ always@(posedge i_clk or negedge reset_n) begin
                 if(scl_is_high) begin
                     if(clk_i2c_cntr == STOP_IND_SETUP) begin
                         reg_sda_o <= 1'b1;
+                        en_sda <= 0;
                         state <= RELEASE_BUS;
                         scl_is_high <= 1'b0;
                     end
@@ -519,6 +536,7 @@ always@(posedge i_clk or negedge reset_n) begin
                     en_scl <= 1'b0;
                     state <= IDLE;
                     reg_sda_o <= 1'bz;
+                    en_sda <= 0;
                     busy <= 1'b0;
                 end
             end
@@ -546,6 +564,6 @@ always@(negedge i_clk or negedge reset_n) begin
 end
 
 //inout cannot be reg
-assign sda_o = reg_sda_o;
+assign sda_o = en_sda ? reg_sda_o : 1'bz;
 assign scl_o = en_scl ? clk_i2c : 1'bz;     //the line will be pulled up to VCC so 1'bz is high
 endmodule
