@@ -141,7 +141,7 @@ reg ack_in_prog;      //For sending acks during read
 reg ack_nack;
 reg en_end_indicator;
 
-reg grab_next_data;
+reg [2:0] grab_next_data;
 reg scl_is_high;
 reg scl_is_low;
 `endif
@@ -179,7 +179,6 @@ always@(posedge i_clk or negedge reset_n) begin
     end
     else begin
         valid_out <= 1'b0;
-        req_data_chunk <= 1'b0;
         case(state)
             /***
              * State: IDLE
@@ -387,7 +386,7 @@ always@(posedge i_clk or negedge reset_n) begin
                     end
                 end
             end
-            
+
             /***
              * State: Write
              * Purpose: Write specified data words starting from address and incrementing by 1
@@ -402,8 +401,8 @@ always@(posedge i_clk or negedge reset_n) begin
                     reg_sda_o <= 1'bz;
                     en_sda <= 0;
                     next_state <= (num_byte_sent == byte_len-1) ? STOP : GRAB_DATA;
+                    grab_next_data <= (num_byte_sent == byte_len-1) ? 0 : 3'b010; // Delay about 2 clk cycle
                     num_byte_sent <= num_byte_sent + 1'b1;
-                    grab_next_data <= 1'b1;
                     $display("DUT: I2C MASTER | TIMESTAMP: %t | MESSAGE: WRITE BYTE #%d SENT!", $time, num_byte_sent);
                 end
                 else begin
@@ -429,12 +428,13 @@ always@(posedge i_clk or negedge reset_n) begin
              * How it works: dequeue data, then grab the word requested (dequeue is req_data_chunk)
              */
             GRAB_DATA: begin
-                if(grab_next_data) begin
+                if(grab_next_data > 0) begin
                     req_data_chunk <= 1'b1;
-                    grab_next_data <= 1'b0;
+                    grab_next_data <= grab_next_data - 1;
                 end
                 else begin
                     state <= WRITE;
+                    req_data_chunk <= 1'b0;
                     byte_sr <= i_data_write;
                 end
             end
